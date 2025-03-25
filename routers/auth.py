@@ -1,10 +1,14 @@
-from fastapi import APIRouter, HTTPException, Depends, Request
-from models.user import UserRegister, UserLogin, TokenResponse
+from functools import wraps
+from fastapi import APIRouter, HTTPException, Depends, Request, Security
+from models.user import User, UserLogin, TokenResponse
 from database import db
 from passlib.context import CryptContext
 import jwt
-import datetime
-from fastapi.security import OAuth2PasswordBearer
+from datetime import datetime, timedelta
+from fastapi.security import OAuth2PasswordBearer   
+
+
+
 
 # Token storage for blacklisting (Replace with Redis for production)
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
@@ -24,13 +28,18 @@ users_collection = db["users"]
 
 # Helper function to create JWT Token
 def create_jwt_token(data: dict):
-    expiration = datetime.datetime.utcnow() + datetime.timedelta(days=1)
-    data.update({"exp": expiration})
-    return jwt.encode(data, SECRET_KEY, algorithm=ALGORITHM)
+    expiration = datetime.utcnow() + timedelta(days=1)  # Expiration set to 1 day
+
+    # Construct the payload using the provided `data` dictionary
+    payload = data.copy()
+    payload.update({"exp": expiration})  # Add expiration to token
+
+    # Encode and return the JWT token
+    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
 
 @auth_router.post("/register")
-async def register_user(user: UserRegister):
+async def register_user(user: User):
     # Check if user already exists
     existing_user = await users_collection.find_one({"email": user.email})
     if existing_user:
@@ -52,7 +61,7 @@ async def login_user(user: UserLogin):
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
     # Generate JWT token
-    token = create_jwt_token({"sub": db_user["email"]})
+    token = create_jwt_token({"sub": db_user["email"], "role": db_user["role"]})
     return {"access_token": token, "token_type": "bearer"}
 
 
@@ -82,14 +91,17 @@ async def verify_token_blacklist(token: str = Depends(oauth2_scheme)):
     return token
 
 async def verify_token(token: str = Depends(oauth2_scheme)):
-    if token in blacklisted_tokens:
-        raise HTTPException(status_code=401, detail="Token is invalid or expired")
-
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        return payload  # Contains user info (email)
+        email: str = payload.get("sub")
+        role: str = payload.get("role")
+
+        if email is None or role is None:
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+
+        return {"email": email, "role": role}  # ✅ Return dictionary
+
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token has expired")
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
-
